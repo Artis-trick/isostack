@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IsoStack | Adaptive Pro</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;600;900&display=swap" rel="stylesheet">
+    <style>
+        :root { --bg: #ffffff; --text: #1a1a1a; }
+        body { 
+            margin: 0; 
+            background: linear-gradient(120deg, #fdfbfb 0%, #ebedee 100%);
+            background-size: 400% 400%;
+            animation: gradientBG 15s ease infinite;
+            color: var(--text); 
+            font-family: 'Outfit', sans-serif; 
+            overflow: hidden; 
+            touch-action: none; 
+        }
+
+        @keyframes gradientBG {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        
+        canvas { display: block; width: 100vw; height: 100vh; background: transparent; }
+        
+        .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.9); z-index: 100; backdrop-filter: blur(15px); transition: all 0.6s ease; }
+        .card { text-align: center; width: 85%; max-width: 320px; animation: fadeIn 0.8s ease; }
+        
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        h1 { font-weight: 900; letter-spacing: 15px; font-size: 3rem; margin: 0; }
+        
+        #hud { position: absolute; top: 30px; width: 100%; display: flex; justify-content: space-around; pointer-events: none; z-index: 10; }
+        .stat { font-weight: 900; font-size: 0.7rem; letter-spacing: 4px; text-transform: uppercase; opacity: 0.5; }
+        
+        #msg-box { position: absolute; top: 140px; width: 100%; display: flex; flex-direction: column; align-items: center; pointer-events: none; }
+        #timer-svg { width: 90px; height: 90px; transform: rotate(-90deg); opacity: 0; transition: opacity 0.3s; }
+        #timer-circle { fill: none; stroke: #000; stroke-width: 4; stroke-dasharray: 283; stroke-dashoffset: 0; transition: stroke-dashoffset 0.1s linear; }
+        #msg { position: absolute; top: 50%; transform: translateY(-50%); font-weight: 900; font-size: 0.85rem; letter-spacing: 5px; text-transform: uppercase; }
+
+        .btn { background: #000; color: #fff; border: none; padding: 22px; border-radius: 2px; font-weight: 900; cursor: pointer; text-transform: uppercase; width: 100%; letter-spacing: 4px; margin-top: 15px; }
+
+        input { width: 100%; box-sizing: border-box; border: none; border-bottom: 2px solid #000; padding: 15px; margin: 25px 0; text-align: center; font-weight: 900; font-size: 2rem; letter-spacing: 12px; background: transparent; outline: none; }
+        
+        .hidden { opacity: 0 !important; pointer-events: none !important; }
+
+        .tut-item { margin: 15px 0; font-size: 0.85rem; letter-spacing: 1px; line-height: 1.6; border-left: 2px solid #000; padding-left: 15px; text-align: left; }
+    </style>
+</head>
+<body>
+
+<div id="setup-screen" class="overlay">
+    <div class="card">
+        <h1>ISO</h1>
+        <div style="font-size: 0.6rem; opacity: 0.4; letter-spacing: 4px; margin: 40px 0 5px 0;">SYNC KEY</div>
+        <div id="my-id" style="font-size: 2.8rem; font-weight: 900; color: #000; margin-bottom: 10px;">------</div>
+        <input type="number" id="join-id" placeholder="000000">
+        <button class="btn" onclick="connectToPeer()">Establish Peer</button>
+        <div style="font-size: 0.6rem; opacity: 0.4; margin-top: 25px; cursor: pointer; letter-spacing: 2px;" onclick="startSolo()">SOLO INTERFACE</div>
+    </div>
+</div>
+
+<div id="tutorial-screen" class="overlay hidden">
+    <div class="card">
+        <h2 style="font-weight: 900; letter-spacing: 6px; margin-bottom: 30px;">MANUAL</h2>
+        <div class="tut-item"><strong>ORBIT</strong><br>Swipe background to navigate space.</div>
+        <div class="tut-item"><strong>MANUFACTURE</strong><br>Tap grid intersection to place solid.</div>
+        <div class="tut-item"><strong>ERASE</strong><br>Double-tap a solid to remove individually.</div>
+        <button class="btn" onclick="readyUp()">Initiate</button>
+    </div>
+</div>
+
+<div id="hud">
+    <div class="stat">Round <span id="round-val">1</span></div>
+    <div class="stat">Level <span id="lvl-val">1</span></div>
+</div>
+
+<div id="msg-box">
+    <svg id="timer-svg" viewBox="0 0 100 100"><circle id="timer-circle" cx="50" cy="50" r="45"/></svg>
+    <div id="msg">READY</div>
+</div>
+
+<button id="submit-btn" class="btn hidden" style="position:fixed; bottom:50px; left:50%; transform:translateX(-50%); width:220px; z-index:50;" onclick="validate()">Finalize</button>
+
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let peer, conn, isHost = false, opponentReady = false;
+let round = 1, level = 1, failCount = 0;
+let targetPattern = [], playerPattern = [];
+let gameState = 'LOBBY';
+let yaw = Math.PI/4, pitch = Math.PI/6, unitSize = 65;
+let isDragging = false, lastX = 0, lastY = 0, startX = 0, startY = 0, lastTapTime = 0;
+
+const levelColors = [
+    { top: "#34495e", left: "#1a1a1a", right: "#2c3e50" },
+    { top: "#16a085", left: "#117864", right: "#148f77" },
+    { top: "#2980b9", left: "#1f618d", right: "#2471a3" },
+    { top: "#8e44ad", left: "#6c3483", right: "#7d3c98" }
+];
+
+function getLevelColors() { return levelColors[(level - 1) % levelColors.length]; }
+
+const shortId = Math.floor(100000 + Math.random() * 900000).toString();
+document.getElementById('my-id').innerText = shortId;
+peer = new Peer('iso-v3-' + shortId);
+
+peer.on('connection', c => { conn = c; setupConn(); });
+function connectToPeer() {
+    const id = document.getElementById('join-id').value;
+    if(id.length === 6) { conn = peer.connect('iso-v3-' + id); setupConn(); }
+}
+
+function setupConn() {
+    conn.on('open', () => {
+        document.getElementById('setup-screen').classList.add('hidden');
+        document.getElementById('tutorial-screen').classList.remove('hidden');
+        isHost = peer.id > conn.peer;
+    });
+    conn.on('data', d => {
+        if(d.type === 'READY') { opponentReady = true; checkStart(); }
+        if(d.type === 'SYNC') { level=d.level; round=d.round; targetPattern=d.pattern; startPhase(d.dur); }
+        if(d.type === 'LOST') { if(isHost) setTimeout(startMatch, 2000); }
+    });
+}
+
+function startSolo() { document.getElementById('setup-screen').classList.add('hidden'); document.getElementById('tutorial-screen').classList.remove('hidden'); isHost = true; }
+function readyUp() {
+    document.getElementById('tutorial-screen').classList.add('hidden');
+    if(conn) conn.send({ type: 'READY' });
+    opponentReady = true; checkStart();
+}
+function checkStart() { if(isHost && opponentReady) startMatch(); }
+
+function startMatch() {
+    const gridSize = 3 + Math.floor(level / 5);
+    // Only generate new pattern if we haven't failed
+    if (gameState !== 'FAIL_RESTART') {
+        targetPattern = [];
+        const count = 2 + Math.floor(level * 0.8);
+        while(targetPattern.length < count) {
+            let p = { x: Math.floor(Math.random()*gridSize), y: Math.floor(Math.random()*gridSize), z: Math.floor(Math.random()*(level > 3 ? 2 : 1)) };
+            if(!targetPattern.some(t => t.x===p.x && t.y===p.y && t.z===p.z)) targetPattern.push(p);
+        }
+    }
+    const memTime = Math.max(2000, 5000 - (failCount * 1000));
+    if(conn) conn.send({ type: 'SYNC', level, round, pattern: targetPattern, dur: memTime });
+    startPhase(memTime);
+}
+
+function startPhase(dur) {
+    gameState = 'PREVIEW'; playerPattern = [];
+    document.getElementById('round-val').innerText = round;
+    document.getElementById('lvl-val').innerText = level;
+    document.getElementById('msg').innerText = `WATCH (${dur/1000}s)`;
+    document.getElementById('timer-svg').style.opacity = "1";
+    let start = Date.now();
+    const tInt = setInterval(() => {
+        let elapsed = Date.now() - start;
+        document.getElementById('timer-circle').style.strokeDashoffset = (elapsed / dur) * 283;
+        if(elapsed >= dur) { 
+            clearInterval(tInt); gameState = 'PLAYING'; document.getElementById('msg').innerText = "BUILD"; 
+            document.getElementById('timer-svg').style.opacity = "0"; document.getElementById('submit-btn').classList.remove('hidden'); 
+        }
+    }, 50);
+}
+
+function validate() {
+    const match = targetPattern.every(t => playerPattern.some(p => p.x===t.x && p.y===t.y && p.z===t.z)) && targetPattern.length === playerPattern.length;
+    if(match) {
+        failCount = 0; round++; level++; gameState = 'SUCCESS';
+        document.getElementById('msg').innerText = "SYNCED";
+        document.getElementById('submit-btn').classList.add('hidden');
+        if(conn) conn.send({ type: 'LOST' });
+        if(isHost) setTimeout(startMatch, 1500);
+    } else {
+        failCount++; gameState = 'FAIL_RESTART'; 
+        document.getElementById('msg').innerText = "MISALIGNED";
+        document.getElementById('submit-btn').classList.add('hidden');
+        // Restart the watch phase with penalty timer
+        setTimeout(() => { if(isHost) startMatch(); }, 1200);
+    }
+}
+
+function transform(x, y, z) {
+    const gridSize = 3 + Math.floor(level / 5);
+    const cx = x - (gridSize - 1) / 2, cy = y - (gridSize - 1) / 2;
+    let x1 = cx * Math.cos(yaw) - cy * Math.sin(yaw), y1 = cx * Math.sin(yaw) + cy * Math.cos(yaw);
+    let y2 = y1 * Math.cos(pitch) - z * Math.sin(pitch), z2 = y1 * Math.sin(pitch) + z * Math.cos(pitch);
+    return { x: canvas.width/2 + x1*unitSize, y: canvas.height/1.8 + y2*unitSize, depth: z2 };
+}
+
+function draw() {
+    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+    let faces = [], s = 0.5, gSize = 3 + Math.floor(level / 5);
+    let colors = getLevelColors();
+    
+    for(let x=0; x<gSize; x++) for(let y=0; y<gSize; y++) {
+        const pts = [transform(x-s,y-s,0), transform(x+s,y-s,0), transform(x+s,y+s,0), transform(x-s,y+s,0)];
+        faces.push({ pts, color: "rgba(0,0,0,0.02)", depth: pts.reduce((a,b)=>a+b.depth,0)/4, stroke: "rgba(0,0,0,0.05)" });
+    }
+
+    const cubes = (gameState === 'PREVIEW') ? targetPattern : playerPattern;
+    cubes.forEach(c => {
+        const x=c.x, y=c.y, z=c.z;
+        const top = [transform(x-s,y-s,z+1), transform(x+s,y-s,z+1), transform(x+s,y+s,z+1), transform(x-s,y+s,z+1)];
+        const sideL = [transform(x-s,y-s,z), transform(x-s,y+s,z), transform(x-s,y+s,z+1), transform(x-s,y-s,z+1)];
+        const sideR = [transform(x-s,y+s,z), transform(x+s,y+s,z), transform(x+s,y+s,z+1), transform(x-s,y+s,z+1)];
+        faces.push({ pts: sideL, color: colors.left, depth: sideL.reduce((a,b)=>a+b.depth,0)/4 }, { pts: sideR, color: colors.right, depth: sideR.reduce((a,b)=>a+b.depth,0)/4 }, { pts: top, color: colors.top, depth: top.reduce((a,b)=>a+b.depth,0)/4 });
+    });
+
+    faces.sort((a,b) => a.depth - b.depth).forEach(f => {
+        ctx.beginPath(); ctx.moveTo(f.pts[0].x, f.pts[0].y); f.pts.forEach(p => ctx.lineTo(p.x, p.y)); ctx.closePath();
+        ctx.fillStyle = f.color; ctx.fill(); ctx.strokeStyle = f.stroke || "rgba(255,255,255,0.05)"; ctx.stroke();
+    });
+    requestAnimationFrame(draw);
+}
+
+canvas.addEventListener('pointerdown', e => {
+    isDragging = true; lastX = e.clientX; lastY = e.clientY; startX = e.clientX; startY = e.clientY;
+});
+canvas.addEventListener('pointermove', e => {
+    if(!isDragging) return; yaw += (e.clientX - lastX) * 0.01; pitch = Math.max(0.1, Math.min(Math.PI/2.1, pitch + (e.clientY - lastY) * 0.01)); lastX = e.clientX; lastY = e.clientY;
+});
+canvas.addEventListener('pointerup', e => {
+    if(gameState === 'PLAYING' && Math.hypot(e.clientX - startX, e.clientY - startY) < 10) {
+        const now = Date.now(); 
+        if((now - lastTapTime) < 300) singularDelete(startX, startY);
+        else addBlock(startX, startY);
+        lastTapTime = now;
+    }
+    isDragging = false;
+});
+
+function singularDelete(sx, sy) {
+    let bestCube = null, maxZ = -1;
+    playerPattern.forEach((p, index) => {
+        const proj = transform(p.x, p.y, p.z + 0.5);
+        if(Math.hypot(sx - proj.x, sy - proj.y) < unitSize * 0.5) {
+            if(p.z > maxZ) { maxZ = p.z; bestCube = index; }
+        }
+    });
+    if(bestCube !== null) playerPattern.splice(bestCube, 1);
+}
+
+function addBlock(sx, sy) {
+    let best = null, min = 10000; const gSize = 3 + Math.floor(level / 5);
+    for(let x=0; x<gSize; x++) for(let y=0; y<gSize; y++) {
+        const p = transform(x, y, 0); const d = Math.hypot(sx - p.x, sy - p.y);
+        if(d < min && d < unitSize * 0.8) { min = d; best = {x, y}; }
+    }
+    if(best) {
+        const count = playerPattern.filter(p => p.x === best.x && p.y === best.y).length;
+        if(count < 3) playerPattern.push({x: best.x, y: best.y, z: count});
+    }
+}
+draw();
+</script>
+</body>
+</html>
